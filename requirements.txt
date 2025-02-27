@@ -1,0 +1,39 @@
+# Dépendances principales
+PyQt6>=6.2.0
+numpy>=1.20.0
+opencv-python>=4.5.0
+ultralytics>=8.0.0
+torch>=1.12.0
+supervision>=0.1.0
+
+# Installer PyTorch pour CUDA 12.1 (modifier selon la version de CUDA)
+-f https://download.pytorch.org/whl/cu121
+torch 
+torchvision
+torchaudio 
+
+# Dépendances pour la détection et le traitement
+Pillow>=9.0.0
+scikit-learn>=1.0.0
+
+# Dépendances pour les alertes et les notifications 
+# (Installer selon la plateforme)
+win10toast>=0.9
+# macOS: pync>=2.0
+# Linux: notify2>=0.3
+
+# Dépendances pour le réseau et le web
+requests>=2.25.0
+
+# Dépendances pour la visualisation de données
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Optimisations (optionnelles)
+# Pour accélérer l'inférence YOLO:
+onnx>=1.10.0
+onnxruntime-gpu>=1.10.0 ; platform_system=="Windows" or platform_system=="Linux"
+# onnxruntime>=1.10.0 ; platform_system=="Darwin"
+
+# Dépendances pour l'audio
+PyAudio>=0.2.11

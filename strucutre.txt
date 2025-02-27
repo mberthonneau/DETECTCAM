@@ -1,0 +1,26 @@
+detectcam/
+├── main.py                     # Point d'entrée principal
+├── config/
+│   ├── __init__.py
+│   ├── settings.py             # Paramètres et configuration
+│   └── default_config.json     # Configuration par défaut
+├── core/
+│   ├── __init__.py
+│   ├── detection_engine.py     # Moteur principal (multithreaded)
+│   ├── video_capture.py        # Capture vidéo (thread séparé)
+│   ├── object_detector.py      # Wrapper YOLO avec optimisations
+│   ├── recorder.py             # Module d'enregistrement vidéo
+│   └── analytics.py            # Statistiques et analyses
+├── ui/
+│   ├── __init__.py
+│   ├── main_window.py          # Fenêtre principale
+│   ├── detection_view.py       # Vue de détection
+│   ├── settings_dialog.py      # Dialogues de paramètres
+│   ├── zone_editor.py          # Éditeur de zones amélioré
+│   └── stats_view.py           # Visualisation des statistiques
+├── utils/
+│   ├── __init__.py
+│   ├── logger.py               # Système de logs
+│   ├── storage.py              # Gestion du stockage optimisé
+│   └── alerts.py               # Système d'alertes amélioré
+└── requirements.txt            # Dépendances

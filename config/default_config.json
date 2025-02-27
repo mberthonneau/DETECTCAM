@@ -1,0 +1,97 @@
+{
+  "version": "0.7.0",
+  "general": {
+    "language": "fr",
+    "theme": "auto",
+    "hardware_acceleration": true,
+    "auto_start": false,
+    "start_minimized": false
+  },
+  "detection": {
+    "model": "yolo11m.pt",
+    "conf_threshold": 0.5,
+    "min_detection_interval": 2,
+    "save_video": true,
+    "video_duration": 5,
+    "buffer_size": 150,
+    "use_cuda": true,
+    "iou_threshold": 0.45,
+    "half_precision": true,
+    "multi_scale": false,
+    "object_filters": [
+      "personne",
+      "voiture",
+      "moto",
+      "vélo",
+      "camion",
+      "sac à dos",
+      "valise"
+    ],
+    "class_thresholds": {
+      "personne": 0.5,
+      "sac à dos": 0.3,
+      "valise": 0.3
+    },
+    "fast_resize": false,
+    "record_audio": false
+  },
+  "display": {
+    "resize_mode": "fit",
+    "custom_width": 640,
+    "custom_height": 480,
+    "resize_percent": 100,
+    "auto_resize_label": true,
+    "show_confidence": true,
+    "show_class": true,
+    "show_fps": true,
+    "highlight_detections": true,
+    "show_zone_numbers": true,
+    "fast_resize": true,
+    "detection_priority": true,
+    "detection_color": "#FF0000",
+    "zone_color": "#00FF00",
+    "text_color": "#FFFFFF"
+  },
+  "alerts": {
+    "email_enabled": false,
+    "email_address": "",
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "email_user": "",
+    "email_password": "",
+    "notification_enabled": true,
+    "alert_threshold": 5,
+    "sound_alert": false,
+    "sound_file": "",
+    "webhook_enabled": false,
+    "webhook_url": ""
+  },
+  "storage": {
+    "base_dir": "detections",
+    "videos_dir": "detections/videos",
+    "images_dir": "detections/images",
+    "exports_dir": "exports",
+    "max_storage_days": 30,
+    "auto_cleanup": true,
+    "video_format": "mp4",
+    "video_quality": 80,
+    "image_format": "jpg",
+    "image_quality": 95
+  },
+  "advanced": {
+    "batch_size": 1,
+    "inference_width": 640,
+    "inference_height": 640,
+    "tracking_method": "none",
+    "show_trackid": false,
+    "log_level": "INFO",
+    "max_cache": 500,
+    "startup_delay": 0,
+    "debug_mode": false,
+    "experimental": false,
+    "stats_update_interval": 3600,
+    "max_history_entries": 10000
+  },
+  "zones": [],
+  "zone_sensitivity": {}
+}

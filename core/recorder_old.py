@@ -13,7 +13,7 @@ import numpy as np
 from datetime import datetime
 from collections import deque
 from typing import Optional, Tuple, List, Deque
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QMutex
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
 from utils.logger import get_module_logger
 
@@ -48,7 +48,7 @@ class VideoRecorder(QObject):
         
         # Paramètres
         self.output_dir = output_dir
-        self.fps = max(1.0, fps)  # Assurer que fps est positif
+        self.fps = fps
         self.frame_size = frame_size
         self.codec = codec
         self.quality = quality
@@ -61,23 +61,15 @@ class VideoRecorder(QObject):
         self.video_duration = 5.0  # Durée par défaut en secondes
         self.frames_counter = 0
         self.total_frames = 0
-        self.mutex = QMutex()
         
         # Timer pour la progression
         self.progress_timer = QTimer()
         self.progress_timer.timeout.connect(self._update_progress)
         
         # Créer le répertoire de sortie s'il n'existe pas
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-            self.logger.info(f"Enregistreur vidéo initialisé: {fps} FPS, {frame_size}, codec {codec}")
-        except Exception as e:
-            self.logger.error(f"Erreur lors de la création du répertoire de sortie: {str(e)}")
-            # Utiliser un répertoire temporaire en cas d'erreur
-            import tempfile
-            self.output_dir = os.path.join(tempfile.gettempdir(), 'detectcam_videos')
-            os.makedirs(self.output_dir, exist_ok=True)
-            self.logger.warning(f"Utilisation du répertoire temporaire: {self.output_dir}")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        self.logger.info(f"Enregistreur vidéo initialisé: {fps} FPS, {frame_size}, codec {codec}")
     
     def set_parameters(self, fps: Optional[float] = None, 
                        frame_size: Optional[Tuple[int, int]] = None,
@@ -92,26 +84,19 @@ class VideoRecorder(QObject):
             codec: Nouveau codec
             quality: Nouvelle qualité
         """
-        self.mutex.lock()
-        try:
-            if fps is not None:
-                self.fps = max(1.0, float(fps))  # Assurer une valeur positive
-            
-            if frame_size is not None:
-                if frame_size[0] > 0 and frame_size[1] > 0:
-                    self.frame_size = frame_size
-                else:
-                    self.logger.warning(f"Dimensions de frame invalides: {frame_size}")
-            
-            if codec is not None:
-                self.codec = codec
-            
-            if quality is not None:
-                self.quality = min(100, max(0, quality))
-            
-            self.logger.info(f"Paramètres d'enregistrement mis à jour: {self.fps} FPS, {self.frame_size}")
-        finally:
-            self.mutex.unlock()
+        if fps is not None:
+            self.fps = float(fps)
+        
+        if frame_size is not None:
+            self.frame_size = frame_size
+        
+        if codec is not None:
+            self.codec = codec
+        
+        if quality is not None:
+            self.quality = min(100, max(0, quality))
+        
+        self.logger.info(f"Paramètres d'enregistrement mis à jour: {self.fps} FPS, {self.frame_size}")
     
     def set_output_directory(self, output_dir: str):
         """
@@ -120,13 +105,9 @@ class VideoRecorder(QObject):
         Args:
             output_dir: Nouveau répertoire de sortie
         """
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-            self.output_dir = output_dir
-            self.logger.info(f"Répertoire de sortie défini: {output_dir}")
-        except Exception as e:
-            self.logger.error(f"Erreur lors de la définition du répertoire de sortie: {str(e)}")
-            # Ne pas changer le répertoire en cas d'erreur
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        self.logger.info(f"Répertoire de sortie défini: {output_dir}")
     
     def start_recording(self, duration: float = 5.0, 
                         buffer: Optional[Deque[np.ndarray]] = None) -> bool:
@@ -144,7 +125,6 @@ class VideoRecorder(QObject):
             self.logger.warning("Enregistrement déjà en cours")
             return False
         
-        self.mutex.lock()
         try:
             # Générer un nom de fichier avec horodatage
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -179,18 +159,15 @@ class VideoRecorder(QObject):
             buffer_frames = 0
             if buffer is not None and len(buffer) > 0:
                 for frame in buffer:
-                    if frame is None or frame.size == 0:
+                    if frame is None:
                         continue
                     
-                    try:
-                        # Redimensionner si nécessaire
-                        if (frame.shape[1], frame.shape[0]) != self.frame_size:
-                            frame = cv2.resize(frame, self.frame_size)
-                        
-                        self.video_writer.write(frame)
-                        buffer_frames += 1
-                    except Exception as e:
-                        self.logger.error(f"Erreur lors de l'écriture d'une frame du buffer: {str(e)}")
+                    # Redimensionner si nécessaire
+                    if (frame.shape[1], frame.shape[0]) != self.frame_size:
+                        frame = cv2.resize(frame, self.frame_size)
+                    
+                    self.video_writer.write(frame)
+                    buffer_frames += 1
                 
                 self.frames_counter = buffer_frames
                 self.logger.info(f"{buffer_frames} frames du buffer écrites")
@@ -203,8 +180,6 @@ class VideoRecorder(QObject):
             self.progress_timer.start(100)  # Toutes les 100ms
             
             self.logger.info(f"Enregistrement démarré: {self.current_video_path}, durée: {self.video_duration}s")
-            
-            self.mutex.unlock()
             return True
             
         except Exception as e:
@@ -213,13 +188,9 @@ class VideoRecorder(QObject):
             
             # Nettoyer en cas d'erreur
             if self.video_writer is not None:
-                try:
-                    self.video_writer.release()
-                except:
-                    pass
+                self.video_writer.release()
                 self.video_writer = None
             
-            self.mutex.unlock()
             return False
     
     def stop_recording(self) -> Optional[str]:
@@ -232,19 +203,14 @@ class VideoRecorder(QObject):
         if not self.is_recording:
             return None
         
-        self.mutex.lock()
         try:
             # Arrêter le timer
             self.progress_timer.stop()
             
             # Finaliser l'enregistrement
             if self.video_writer is not None:
-                try:
-                    self.video_writer.release()
-                except Exception as e:
-                    self.logger.error(f"Erreur lors de la libération du writer: {str(e)}")
-                finally:
-                    self.video_writer = None
+                self.video_writer.release()
+                self.video_writer = None
             
             self.is_recording = False
             video_path = self.current_video_path
@@ -253,7 +219,6 @@ class VideoRecorder(QObject):
             if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
                 self.logger.error(f"Le fichier vidéo {video_path} est inexistant ou vide")
                 self.error_occurred.emit("Erreur: Fichier vidéo vide")
-                self.mutex.unlock()
                 return None
             
             # Émettre le signal de fin d'enregistrement
@@ -261,8 +226,6 @@ class VideoRecorder(QObject):
             self.recording_progress.emit(0.0)  # Réinitialiser la progression
             
             self.logger.info(f"Enregistrement terminé: {video_path}")
-            
-            self.mutex.unlock()
             return video_path
             
         except Exception as e:
@@ -270,7 +233,6 @@ class VideoRecorder(QObject):
             self.error_occurred.emit(f"Erreur: {str(e)}")
             
             self.is_recording = False
-            self.mutex.unlock()
             return None
     
     def add_frame(self, frame: np.ndarray) -> bool:
@@ -286,44 +248,23 @@ class VideoRecorder(QObject):
         if not self.is_recording or self.video_writer is None or frame is None:
             return False
         
-        self.mutex.lock()
         try:
-            # Vérifier que la frame est valide
-            if frame.size == 0:
-                self.logger.warning("Frame vide ignorée")
-                self.mutex.unlock()
-                return False
-            
             # Redimensionner si nécessaire
             if (frame.shape[1], frame.shape[0]) != self.frame_size:
-                try:
-                    frame = cv2.resize(frame, self.frame_size)
-                except Exception as e:
-                    self.logger.error(f"Erreur lors du redimensionnement: {str(e)}")
-                    self.mutex.unlock()
-                    return False
+                frame = cv2.resize(frame, self.frame_size)
             
             # Écrire la frame
-            try:
-                self.video_writer.write(frame)
-                self.frames_counter += 1
-            except Exception as e:
-                self.logger.error(f"Erreur lors de l'écriture de la frame: {str(e)}")
-                self.mutex.unlock()
-                return False
+            self.video_writer.write(frame)
+            self.frames_counter += 1
             
             # Si le nombre de frames est atteint, arrêter l'enregistrement
             if self.frames_counter >= self.total_frames:
-                self.mutex.unlock()
                 self.stop_recording()
-                return False  # L'enregistrement est terminé
             
-            self.mutex.unlock()
             return True
             
         except Exception as e:
             self.logger.error(f"Erreur lors de l'ajout de frame: {str(e)}")
-            self.mutex.unlock()
             return False
     
     def _update_progress(self):
@@ -331,17 +272,14 @@ class VideoRecorder(QObject):
         if not self.is_recording:
             return
         
-        self.mutex.lock()
         try:
             # Méthode 1: Basée sur le temps écoulé
-            progress = 0.0
-            
-            if self.recording_start_time and self.video_duration > 0:
+            if self.recording_start_time:
                 elapsed = (datetime.now() - self.recording_start_time).total_seconds()
                 progress = min(1.0, elapsed / self.video_duration)
             
-            # Méthode 2: Basée sur le nombre de frames si la méthode 1 n'est pas applicable
-            elif self.total_frames > 0:
+            # Méthode 2: Basée sur le nombre de frames
+            else:
                 progress = min(1.0, self.frames_counter / self.total_frames)
             
             # Émettre le signal de progression
@@ -349,14 +287,10 @@ class VideoRecorder(QObject):
             
             # Si l'enregistrement est terminé
             if progress >= 1.0:
-                self.mutex.unlock()
                 self.stop_recording()
-                return
                 
         except Exception as e:
             self.logger.error(f"Erreur lors de la mise à jour de la progression: {str(e)}")
-        
-        self.mutex.unlock()
     
     def save_frame(self, frame: np.ndarray, output_dir: Optional[str] = None) -> Optional[str]:
         """
@@ -369,8 +303,7 @@ class VideoRecorder(QObject):
         Returns:
             Chemin de l'image sauvegardée, ou None en cas d'erreur
         """
-        if frame is None or frame.size == 0:
-            self.logger.error("Frame invalide pour la sauvegarde")
+        if frame is None:
             return None
         
         try:
@@ -379,28 +312,14 @@ class VideoRecorder(QObject):
                 output_dir = os.path.join(os.path.dirname(self.output_dir), 'images')
             
             # Créer le répertoire si nécessaire
-            try:
-                os.makedirs(output_dir, exist_ok=True)
-            except Exception as dir_error:
-                self.logger.error(f"Erreur lors de la création du répertoire: {str(dir_error)}")
-                # Utiliser un répertoire temporaire en cas d'erreur
-                import tempfile
-                output_dir = os.path.join(tempfile.gettempdir(), 'detectcam_images')
-                os.makedirs(output_dir, exist_ok=True)
+            os.makedirs(output_dir, exist_ok=True)
             
             # Générer un nom de fichier
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             image_path = os.path.join(output_dir, f"detection_{timestamp}.jpg")
             
-            # Sauvegarder l'image avec gestion d'erreurs
-            success = cv2.imwrite(image_path, frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
-            
-            if not success:
-                raise IOError(f"Échec d'écriture de l'image à {image_path}")
-            
-            # Vérifier que le fichier a bien été créé
-            if not os.path.exists(image_path) or os.path.getsize(image_path) == 0:
-                raise IOError(f"Fichier image vide ou inexistant: {image_path}")
+            # Sauvegarder l'image
+            cv2.imwrite(image_path, frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
             
             self.logger.info(f"Image sauvegardée: {image_path}")
             return image_path
@@ -416,26 +335,14 @@ class VideoRecorder(QObject):
         Returns:
             Tuple (is_recording, progression, path)
         """
-        self.mutex.lock()
-        try:
-            if not self.is_recording:
-                self.mutex.unlock()
-                return (False, 0.0, None)
-            
-            # Calculer la progression
-            progress = 0.0
-            
-            if self.recording_start_time and self.video_duration > 0:
-                elapsed = (datetime.now() - self.recording_start_time).total_seconds()
-                progress = min(1.0, elapsed / self.video_duration)
-            elif self.total_frames > 0:
-                progress = min(1.0, self.frames_counter / self.total_frames)
-            
-            path = self.current_video_path
-            
-            self.mutex.unlock()
-            return (True, progress, path)
-        except Exception as e:
-            self.logger.error(f"Erreur lors de la récupération du statut: {str(e)}")
-            self.mutex.unlock()
+        if not self.is_recording:
             return (False, 0.0, None)
+        
+        # Calculer la progression
+        if self.recording_start_time:
+            elapsed = (datetime.now() - self.recording_start_time).total_seconds()
+            progress = min(1.0, elapsed / self.video_duration)
+        else:
+            progress = min(1.0, self.frames_counter / self.total_frames)
+        
+        return (True, progress, self.current_video_path)

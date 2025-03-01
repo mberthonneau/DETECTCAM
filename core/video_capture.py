@@ -5,7 +5,7 @@
 Module de capture vidéo pour DETECTCAM
 Gère la capture vidéo dans un thread séparé
 """
-import os  # Ajouté pour la référence à os.path.exists
+import os
 import cv2
 import time
 import logging
@@ -62,10 +62,27 @@ class VideoCaptureThread(QThread):
             # Fermer la capture précédente si elle existe
             if self.cap is not None:
                 self.cap.release()
+                self.cap = None
             
             self.source = source
+            
+            # Vérifier si la source est une URL de streaming
+            is_stream = False
+            if isinstance(source, str):
+                is_stream = source.startswith(('http://', 'https://', 'rtsp://'))
+            
+            # Ajouter un délai pour les flux
+            if is_stream:
+                time.sleep(1.0)  # Attendre avant de se connecter à des flux
+            
+            # Ouvrir la source
             self.cap = cv2.VideoCapture(source)
             
+            # Attendre un peu que la connexion s'établisse
+            if is_stream:
+                time.sleep(0.5)
+            
+            # Vérifier si la source est ouverte
             if not self.cap.isOpened():
                 self.logger.error(f"Impossible d'ouvrir la source vidéo: {source}")
                 self.error_occurred.emit(f"Impossible d'ouvrir la source vidéo: {source}")
@@ -73,13 +90,25 @@ class VideoCaptureThread(QThread):
                 return False
             
             # Récupérer les propriétés vidéo
-            self.frame_size = (
-                int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            )
+            width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            # Vérifier si les dimensions sont valides
+            if width <= 0 or height <= 0:
+                width, height = 640, 480  # Dimensions par défaut
+                self.logger.warning(f"Dimensions invalides, utilisation de valeurs par défaut: {width}x{height}")
+                
+                # Essayer de définir des dimensions par défaut
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            
+            self.frame_size = (width, height)
+            
+            # Récupérer les FPS
             self.fps = self.cap.get(cv2.CAP_PROP_FPS)
             if self.fps <= 0:
                 self.fps = 30.0  # Valeur par défaut si non détectée
+                self.logger.warning(f"FPS invalides, utilisation de la valeur par défaut: {self.fps}")
             
             # Calculer l'intervalle par défaut
             self.interval_ms = int(1000 / self.fps)
@@ -92,6 +121,15 @@ class VideoCaptureThread(QThread):
         except Exception as e:
             self.logger.error(f"Erreur lors de la définition de la source: {str(e)}")
             self.error_occurred.emit(f"Erreur: {str(e)}")
+            
+            # S'assurer que cap est libéré en cas d'erreur
+            if hasattr(self, 'cap') and self.cap is not None:
+                try:
+                    self.cap.release()
+                except:
+                    pass
+                self.cap = None
+                
             self.mutex.unlock()
             return False
     
@@ -121,8 +159,8 @@ class VideoCaptureThread(QThread):
             interval_ms: Intervalle en millisecondes
         """
         if interval_ms <= 0:
-            self.logger.warning(f"Intervalle invalide: {interval_ms} ms")
-            return
+            self.logger.warning(f"Intervalle invalide: {interval_ms} ms, utilisation de 33 ms")
+            interval_ms = 33  # ~30 FPS par défaut
         
         self.mutex.lock()
         self.interval_ms = interval_ms
@@ -154,21 +192,32 @@ class VideoCaptureThread(QThread):
         try:
             # Définir la résolution
             if width is not None and height is not None:
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                
-                # Vérifier les valeurs réelles définies
-                actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                self.frame_size = (actual_width, actual_height)
-                self.logger.info(f"Résolution de caméra définie: {actual_width}x{actual_height}")
+                if width > 0 and height > 0:
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                    
+                    # Vérifier les valeurs réelles définies
+                    actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    
+                    # Vérifier si les dimensions obtenues sont valides
+                    if actual_width > 0 and actual_height > 0:
+                        self.frame_size = (actual_width, actual_height)
+                        self.logger.info(f"Résolution de caméra définie: {actual_width}x{actual_height}")
+                    else:
+                        self.logger.warning(f"Échec de définition de résolution: {width}x{height}")
+                else:
+                    self.logger.warning(f"Dimensions invalides: {width}x{height}")
             
             # Définir les FPS
-            if fps is not None:
+            if fps is not None and fps > 0:
                 self.cap.set(cv2.CAP_PROP_FPS, fps)
                 actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-                self.fps = actual_fps
-                self.logger.info(f"FPS de caméra définis: {actual_fps}")
+                if actual_fps > 0:
+                    self.fps = actual_fps
+                    self.logger.info(f"FPS de caméra définis: {actual_fps}")
+                else:
+                    self.logger.warning(f"Échec de définition des FPS: {fps}")
             
             # Définir l'exposition
             if exposure is not None:
@@ -201,21 +250,40 @@ class VideoCaptureThread(QThread):
             Dictionnaire des propriétés
         """
         if self.cap is None or not self.cap.isOpened():
-            return {}
+            return {
+                'width': 0,
+                'height': 0,
+                'fps': 0,
+                'exposure': 0,
+                'auto_focus': False,
+                'auto_wb': False,
+                'brightness': 0,
+                'contrast': 0,
+                'saturation': 0
+            }
         
-        props = {
-            'width': int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            'height': int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            'fps': self.cap.get(cv2.CAP_PROP_FPS),
-            'exposure': self.cap.get(cv2.CAP_PROP_EXPOSURE),
-            'auto_focus': bool(self.cap.get(cv2.CAP_PROP_AUTOFOCUS)),
-            'auto_wb': bool(self.cap.get(cv2.CAP_PROP_AUTO_WB)),
-            'brightness': self.cap.get(cv2.CAP_PROP_BRIGHTNESS),
-            'contrast': self.cap.get(cv2.CAP_PROP_CONTRAST),
-            'saturation': self.cap.get(cv2.CAP_PROP_SATURATION)
-        }
-        
-        return props
+        try:
+            props = {
+                'width': int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                'height': int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                'fps': self.cap.get(cv2.CAP_PROP_FPS),
+                'exposure': self.cap.get(cv2.CAP_PROP_EXPOSURE),
+                'auto_focus': bool(self.cap.get(cv2.CAP_PROP_AUTOFOCUS)),
+                'auto_wb': bool(self.cap.get(cv2.CAP_PROP_AUTO_WB)),
+                'brightness': self.cap.get(cv2.CAP_PROP_BRIGHTNESS),
+                'contrast': self.cap.get(cv2.CAP_PROP_CONTRAST),
+                'saturation': self.cap.get(cv2.CAP_PROP_SATURATION)
+            }
+            
+            return props
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la récupération des propriétés: {str(e)}")
+            return {
+                'width': self.frame_size[0],
+                'height': self.frame_size[1],
+                'fps': self.fps,
+                'error': str(e)
+            }
     
     def start(self, interval_ms: int = None):
         """
@@ -230,7 +298,11 @@ class VideoCaptureThread(QThread):
         # Assurer que la source est initialisée
         if self.cap is None or not self.cap.isOpened():
             if self.source is not None:
-                self.set_source(self.source)
+                success = self.set_source(self.source)
+                if not success:
+                    self.logger.error("Échec d'initialisation de la source vidéo")
+                    self.error_occurred.emit("Échec d'initialisation de la source vidéo")
+                    return
             else:
                 self.logger.error("Impossible de démarrer: aucune source vidéo définie")
                 self.error_occurred.emit("Aucune source vidéo définie")
@@ -244,12 +316,22 @@ class VideoCaptureThread(QThread):
     def stop(self):
         """Arrête le thread de capture"""
         self.running = False
-        self.wait()  # Attendre la fin du thread
+        
+        # Attendre que le thread se termine
+        if self.isRunning():
+            self.wait(2000)  # Attendre max 2 secondes
+            if self.isRunning():
+                self.terminate()  # Force la terminaison si nécessaire
+                self.logger.warning("Thread de capture forcé à terminer")
         
         self.mutex.lock()
         if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+            try:
+                self.cap.release()
+            except Exception as e:
+                self.logger.error(f"Erreur lors de la libération de la caméra: {str(e)}")
+            finally:
+                self.cap = None
         self.mutex.unlock()
         
         self.logger.info("Thread de capture arrêté")
@@ -266,6 +348,9 @@ class VideoCaptureThread(QThread):
     
     def run(self):
         """Méthode principale du thread"""
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+        
         while self.running:
             if not self.paused:
                 self.mutex.lock()
@@ -273,44 +358,117 @@ class VideoCaptureThread(QThread):
                 if self.cap is None or not self.cap.isOpened():
                     self.mutex.unlock()
                     self.error_occurred.emit("Erreur: Source vidéo non disponible")
-                    self.running = False
-                    break
-                
-                ret, frame = self.cap.read()
-                self.mutex.unlock()
-                
-                if not ret:
-                    # Gérer différemment selon le type de source
-                    if isinstance(self.source, str) and self.source.startswith(('http://', 'https://', 'rtsp://')):
-                        # Pour les flux, essayer de reconnecter
-                        self.logger.warning("Perte de connexion au flux, tentative de reconnexion...")
-                        self.mutex.lock()
-                        if self.cap is not None:
-                            self.cap.release()
-                        self.cap = cv2.VideoCapture(self.source)
-                        self.mutex.unlock()
-                        time.sleep(1)  # Attendre avant de réessayer
-                        continue
+                    consecutive_errors += 1
                     
-                    elif isinstance(self.source, str) and os.path.exists(self.source):
-                        # Pour les fichiers, signaler la fin
-                        self.logger.info("Fin du fichier vidéo")
-                        self.error_occurred.emit("Fin du fichier vidéo")
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.logger.error(f"Trop d'erreurs consécutives ({consecutive_errors}), arrêt du thread")
                         self.running = False
                         break
                     
-                    else:
-                        # Pour les webcams, signaler l'erreur
-                        self.logger.error("Erreur de lecture de la webcam")
-                        self.error_occurred.emit("Erreur de lecture de la webcam")
-                        time.sleep(0.5)  # Attendre avant de réessayer
-                        continue
+                    time.sleep(0.5)  # Pause avant de réessayer
+                    continue
                 
-                # Émettre la frame capturée
-                self.frame_captured.emit(frame)
+                try:
+                    ret, frame = self.cap.read()
+                    self.mutex.unlock()
+                    
+                    if not ret or frame is None:
+                        # Gérer différemment selon le type de source
+                        if isinstance(self.source, str) and self.source.startswith(('http://', 'https://', 'rtsp://')):
+                            # Pour les flux, essayer de reconnecter
+                            self.logger.warning("Perte de connexion au flux, tentative de reconnexion...")
+                            self.mutex.lock()
+                            if self.cap is not None:
+                                self.cap.release()
+                                self.cap = None
+                            self.mutex.unlock()
+                            
+                            time.sleep(1)  # Attendre avant de réessayer
+                            
+                            # Reconnecter
+                            self.mutex.lock()
+                            self.cap = cv2.VideoCapture(self.source)
+                            self.mutex.unlock()
+                            
+                            consecutive_errors += 1
+                            if consecutive_errors >= max_consecutive_errors:
+                                self.logger.error(f"Échec de reconnexion après {consecutive_errors} tentatives")
+                                self.error_occurred.emit("Échec de reconnexion au flux")
+                                self.running = False
+                                break
+                            
+                            continue
+                        
+                        elif isinstance(self.source, str) and os.path.exists(self.source):
+                            # Pour les fichiers, boucler ou signaler la fin
+                            if os.path.exists(self.source):  # Vérifier à nouveau que le fichier existe toujours
+                                self.logger.info("Fin du fichier vidéo")
+                                
+                                # Essayer de revenir au début
+                                self.mutex.lock()
+                                if self.cap is not None:
+                                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                                    ret, frame = self.cap.read()
+                                    if not ret:
+                                        self.logger.error("Impossible de boucler la vidéo")
+                                        self.error_occurred.emit("Fin du fichier vidéo")
+                                        self.running = False
+                                        self.mutex.unlock()
+                                        break
+                                else:
+                                    self.mutex.unlock()
+                                    continue
+                                self.mutex.unlock()
+                            else:
+                                self.logger.error("Fichier vidéo devenu inaccessible")
+                                self.error_occurred.emit("Fichier vidéo inaccessible")
+                                self.running = False
+                                break
+                        
+                        else:
+                            # Pour les webcams, signaler l'erreur et réessayer
+                            self.logger.error("Erreur de lecture de la webcam")
+                            self.error_occurred.emit("Erreur de lecture de la webcam")
+                            
+                            consecutive_errors += 1
+                            if consecutive_errors >= max_consecutive_errors:
+                                self.logger.error(f"Trop d'erreurs consécutives ({consecutive_errors}), arrêt du thread")
+                                self.running = False
+                                break
+                            
+                            time.sleep(0.5)  # Attendre avant de réessayer
+                            continue
+                    
+                    # Réinitialiser le compteur d'erreurs si on a lu une frame avec succès
+                    consecutive_errors = 0
+                    
+                    # Vérifier que la frame est valide
+                    if frame is None or frame.size == 0:
+                        self.logger.warning("Frame vide reçue")
+                        continue
+                    
+                    # Émettre la frame capturée
+                    self.frame_captured.emit(frame)
+                    
+                except Exception as e:
+                    self.mutex.unlock()  # Assurer que le mutex est déverrouillé en cas d'exception
+                    self.logger.error(f"Erreur lors de la capture: {str(e)}")
+                    consecutive_errors += 1
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.error_occurred.emit(f"Erreur critique: {str(e)}")
+                        self.running = False
+                        break
+                    
+                    time.sleep(0.5)  # Pause avant de réessayer
+                    continue
             
             # Attendre l'intervalle défini
-            time.sleep(self.interval_ms / 1000.0)
+            try:
+                sleep_time = max(0.001, self.interval_ms / 1000.0)  # Assurer un temps positif
+                time.sleep(sleep_time)
+            except Exception as e:
+                self.logger.error(f"Erreur pendant l'attente: {str(e)}")
     
     def get_preview_frame(self) -> Optional[np.ndarray]:
         """
@@ -319,27 +477,37 @@ class VideoCaptureThread(QThread):
         Returns:
             Frame d'aperçu ou None si non disponible
         """
-        if self.cap is None or not self.cap.isOpened():
+        if self.cap is None:
+            self.logger.error("Aucune source définie pour l'aperçu")
+            return None
+            
+        if not self.cap.isOpened():
+            self.logger.error("Source non ouverte pour l'aperçu")
             return None
         
         self.mutex.lock()
         try:
-            ret, frame = self.cap.read()
+            # Essayer de lire une frame
+            for _ in range(3):  # Essayer 3 fois
+                ret, frame = self.cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    break
+                time.sleep(0.1)  # Petit délai entre les tentatives
             
-            # Remettre la vidéo au début pour les fichiers vidéo
-            if isinstance(self.source, str) and os.path.exists(self.source):
+            # Vérifier si on a réussi à lire une frame
+            if not ret or frame is None or frame.size == 0:
+                self.mutex.unlock()
+                self.logger.error("Impossible de lire une frame d'aperçu")
+                return None
+            
+            # Remettre la vidéo au début pour les fichiers vidéo (pas pour les streams ou webcams)
+            if isinstance(self.source, str) and os.path.exists(self.source) and not self.source.startswith(('http://', 'https://', 'rtsp://')):
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             
             self.mutex.unlock()
+            return frame
             
-            if ret:
-                return frame
-            else:
-                return None
         except Exception as e:
             self.mutex.unlock()
             self.logger.error(f"Erreur lors de l'obtention de la frame d'aperçu: {str(e)}")
             return None
-    
-       
-

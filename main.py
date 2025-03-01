@@ -13,9 +13,10 @@ Version: 0.7.0
 import sys
 import os
 import logging
-from PyQt6.QtWidgets import QApplication , QSplashScreen
-from PyQt6.QtCore import Qt, QThread
-from PyQt6.QtGui import QPixmap
+import time
+from PyQt6.QtWidgets import QApplication, QSplashScreen
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap, QPainter, QBrush, QColor
 
 # Import des modules internes
 from config.settings import load_app_settings, APP_NAME, APP_VERSION, ORGANIZATION
@@ -29,16 +30,38 @@ def show_splash_screen():
     
     # Utiliser une image par défaut si l'image de splash n'existe pas
     if not os.path.exists(splash_path):
+        # Créer un splashscreen basique avec du texte
         splash = QSplashScreen()
         splash.showMessage(f"Chargement de {APP_NAME} v{APP_VERSION}...", 
                         Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, 
                         Qt.GlobalColor.white)
     else:
+        # Utiliser l'image existante
         splash_pixmap = QPixmap(splash_path)
         splash = QSplashScreen(splash_pixmap)
     
+    # Afficher le splash
     splash.show()
     return splash
+
+# Créer une barre de progression personnalisée
+def update_splash_progress(splash, progress, message=""):
+    # Dessiner sur le splash screen
+    pixmap = splash.pixmap()
+    painter = QPainter(pixmap)
+    
+    # Dessiner la barre de progression
+    painter.setPen(Qt.GlobalColor.white)
+    painter.setBrush(QBrush(QColor(0, 120, 215)))
+    painter.drawRect(10, pixmap.height()-30, int(progress/100 * (pixmap.width()-20)), 20)
+    
+    # Mettre à jour le message
+    if message:
+        splash.showMessage(message, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, Qt.GlobalColor.white)
+    
+    painter.end()
+    splash.setPixmap(pixmap)
+    QApplication.processEvents()
 
 def main():
     """Point d'entrée principal de l'application"""
@@ -57,13 +80,33 @@ def main():
     splash = show_splash_screen()
     app.processEvents()
     
+    # Initialisation avec barre de progression
+    update_splash_progress(splash, 10, "Initialisation de l'application...")
+    time.sleep(0.3)  # Simuler un délai de chargement
+    
     # Charger les paramètres globaux
+    update_splash_progress(splash, 30, "Chargement des paramètres...")
     settings = load_app_settings()
     logger.info("Paramètres de l'application chargés")
+    time.sleep(0.3)  # Simuler un délai de chargement
     
     try:
-        # Créer et afficher la fenêtre principale
+        # Préparation à la création de l'interface
+        update_splash_progress(splash, 50, "Préparation de l'interface...")
+        time.sleep(0.3)  # Simuler un délai de chargement
+        
+        # Initialisation des composants
+        update_splash_progress(splash, 70, "Initialisation des composants...")
+        time.sleep(0.3)  # Simuler un délai de chargement
+        
+        # Création de la fenêtre principale
+        update_splash_progress(splash, 90, "Création de la fenêtre principale...")
         window = MainWindow(settings)
+        time.sleep(0.3)  # Simuler un délai de chargement
+        
+        # Finalisation
+        update_splash_progress(splash, 100, "Démarrage terminé!")
+        time.sleep(0.3)  # Un petit délai pour voir "100%"
         
         # Fermer l'écran de démarrage une fois la fenêtre principale chargée
         splash.finish(window)

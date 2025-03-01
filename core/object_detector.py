@@ -46,12 +46,15 @@ class ObjectDetector:
         self.iou_threshold = iou_threshold
         self.use_cuda = use_cuda
         self.half_precision = half_precision
+        self.model = None
         
         # Détection de device
         self.device = self._select_device()
         
         # Chargement du modèle
-        self._load_model()
+        success = self._load_model()
+        if not success:
+            self.logger.critical("Initialisation du détecteur échouée")
         
         # Mappage français des classes (pour les 80 classes COCO)
         self.class_mapping = {
@@ -144,20 +147,24 @@ class ObjectDetector:
         Returns:
             Périphérique à utiliser ('cuda', 'mps', ou 'cpu')
         """
-        if self.use_cuda and torch.cuda.is_available():
-            device = 'cuda'
-            # Afficher les informations sur le GPU
-            gpu_name = torch.cuda.get_device_name(0)
-            self.logger.info(f"Utilisation du GPU: {gpu_name}")
-        elif hasattr(torch, 'mps') and torch.mps.is_available():
-            # Support pour Apple Silicon (M1/M2)
-            device = 'mps'
-            self.logger.info("Utilisation d'Apple Silicon (MPS)")
-        else:
-            device = 'cpu'
-            self.logger.info("Utilisation du CPU")
-        
-        return device
+        try:
+            if self.use_cuda and torch.cuda.is_available():
+                device = 'cuda'
+                # Afficher les informations sur le GPU
+                gpu_name = torch.cuda.get_device_name(0)
+                self.logger.info(f"Utilisation du GPU: {gpu_name}")
+            elif hasattr(torch, 'mps') and hasattr(torch.mps, 'is_available') and torch.mps.is_available():
+                # Support pour Apple Silicon (M1/M2)
+                device = 'mps'
+                self.logger.info("Utilisation d'Apple Silicon (MPS)")
+            else:
+                device = 'cpu'
+                self.logger.info("Utilisation du CPU")
+            
+            return device
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la sélection du périphérique: {str(e)}")
+            return 'cpu'  # Fallback sur CPU en cas d'erreur
     
     def _load_model(self) -> bool:
         """
@@ -167,33 +174,78 @@ class ObjectDetector:
             True si le chargement a réussi, False sinon
         """
         try:
-            # Vérifier si le fichier existe
+            # Si un modèle est déjà chargé, libérer les ressources
+            if self.model is not None:
+                del self.model
+                torch.cuda.empty_cache()  # Libérer la mémoire GPU si applicable
+                self.model = None
+            
+            # Vérifier si le fichier existe pour les modèles locaux
             if not os.path.exists(self.model_path) and not self.model_path.startswith('yolo'):
                 self.logger.error(f"Le modèle {self.model_path} n'existe pas.")
-                raise FileNotFoundError(f"Le modèle {self.model_path} n'existe pas.")
+                
+                # Essayer un modèle par défaut
+                default_model = 'yolo11n.pt'
+                if os.path.exists(default_model):
+                    self.logger.warning(f"Utilisation du modèle par défaut {default_model}")
+                    self.model_path = default_model
+                else:
+                    # Si pas de modèle local, essayer de télécharger depuis Ultralytics
+                    self.logger.warning(f"Tentative de téléchargement du modèle {self.model_path}")
             
-            # Charger le modèle
-            self.model = YOLO(self.model_path)
+            # Charger le modèle avec gestion des erreurs
+            try:
+                self.model = YOLO(self.model_path)
+            except Exception as model_error:
+                self.logger.error(f"Erreur lors du chargement du modèle {self.model_path}: {str(model_error)}")
+                
+                # Fallback vers un modèle plus léger
+                fallback_models = ['yolo11m.pt', 'yolo11s.pt']
+                for fallback in fallback_models:
+                    try:
+                        self.logger.warning(f"Tentative de fallback vers {fallback}")
+                        self.model = YOLO(fallback)
+                        self.model_path = fallback
+                        break
+                    except:
+                        continue
+                
+                if self.model is None:
+                    raise RuntimeError("Impossible de charger un modèle, même en fallback")
             
             # Déplacer le modèle sur le périphérique
-            self.model.to(self.device)
-            
-            # Appliquer la demi-précision si demandé
-            if self.half_precision and self.device == 'cuda':
-                self.logger.info("Activation de la demi-précision (FP16)")
-                self.model.model.half()
-            
-            self.logger.info(f"Modèle {self.model_path} chargé avec succès sur {self.device}")
-            return True
+            if self.model is not None:
+                self.model.to(self.device)
+                
+                # Appliquer la demi-précision si demandé et sur CUDA
+                if self.half_precision and self.device == 'cuda':
+                    self.logger.info("Activation de la demi-précision (FP16)")
+                    try:
+                        # Différentes versions de YOLO peuvent avoir des structures différentes
+                        if hasattr(self.model, 'half'):
+                            self.model.half()
+                        elif hasattr(self.model, 'model') and hasattr(self.model.model, 'half'):
+                            self.model.model.half()
+                        else:
+                            self.logger.warning("Impossible d'activer la demi-précision : méthode half() non trouvée")
+                    except Exception as half_error:
+                        self.logger.warning(f"Erreur lors de l'activation de la demi-précision: {str(half_error)}")
+                
+                self.logger.info(f"Modèle {self.model_path} chargé avec succès sur {self.device}")
+                return True
+            else:
+                return False
             
         except Exception as e:
-            self.logger.error(f"Erreur lors du chargement du modèle: {str(e)}")
-            # Fallback vers un modèle par défaut en cas d'erreur
+            self.logger.error(f"Erreur critique lors du chargement du modèle: {str(e)}")
+            
+            # Dernier recours - essai de chargement d'un modèle minimal
             try:
-                self.model_path = 'yolo11m.pt'  # Modèle le plus léger
+                self.model_path = 'yolo11n.pt'  # Modèle le plus léger
                 self.model = YOLO(self.model_path)
-                self.model.to(self.device)
-                self.logger.warning(f"Fallback vers le modèle {self.model_path}")
+                self.model.to('cpu')  # Utiliser le CPU pour plus de fiabilité
+                self.device = 'cpu'
+                self.logger.warning(f"Fallback d'urgence vers le modèle {self.model_path} sur CPU")
                 return True
             except:
                 self.logger.critical("Impossible de charger un modèle de fallback.")
@@ -216,7 +268,15 @@ class ObjectDetector:
         Returns:
             Résultats de la détection (format YOLO)
         """
-        if frame is None:
+        # Vérifier que le modèle est chargé
+        if self.model is None:
+            if not self._load_model():
+                self.logger.error("Modèle non chargé, détection impossible")
+                return []
+        
+        # Vérifier que la frame est valide
+        if frame is None or frame.size == 0:
+            self.logger.warning("Frame vide ou invalide")
             return []
         
         # Utiliser les seuils par défaut si non spécifiés
@@ -224,35 +284,77 @@ class ObjectDetector:
         iou = iou if iou is not None else self.iou_threshold
         
         try:
+            # Vérifier que la frame a le bon format
+            if not isinstance(frame, np.ndarray):
+                self.logger.error(f"Type de frame invalide: {type(frame)}")
+                return []
+            
+            # Vérifier les dimensions et le type de la frame
+            if len(frame.shape) != 3 or frame.shape[2] != 3:
+                self.logger.error(f"Dimensions de frame invalides: {frame.shape}")
+                return []
+            
             # Convertir en RGB si nécessaire (YOLO attend des images RGB)
-            if len(frame.shape) == 3 and frame.shape[2] == 3:
+            try:
                 if frame.dtype != np.uint8:
                     frame = frame.astype(np.uint8)
-                # Check if the frame is BGR (OpenCV default)
-                if cv2.__version__.startswith('4'):
-                    # OpenCV 4.x
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                else:
-                    # OpenCV 3.x and earlier
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Convertir BGR -> RGB si c'est une image OpenCV
-                #frame_rgb = cv2.cvtColor(frame, color_space)
-                
-            else:
+                # Convertir BGR -> RGB (OpenCV utilise BGR par défaut)
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            except Exception as convert_error:
+                self.logger.error(f"Erreur lors de la conversion de la frame: {str(convert_error)}")
+                # Essayer d'utiliser la frame telle quelle
                 frame_rgb = frame
             
-            # Détection avec YOLO
-            results = self.model(
-                frame_rgb,
-                conf=conf,
-                iou=iou,
-                half=self.half_precision,
-                device=self.device,
-                augment=multi_scale  # Multi-scale inference si demandé
-            )
-            
-            return results
+            # Détection avec YOLO et gestion des exceptions
+            try:
+                results = self.model(
+                    frame_rgb,
+                    conf=conf,
+                    iou=iou,
+                    half=self.half_precision and self.device == 'cuda',
+                    device=self.device,
+                    augment=multi_scale  # Multi-scale inference si demandé
+                )
+                return results
+            except RuntimeError as runtime_error:
+                # Erreur CUDA out of memory
+                if "CUDA out of memory" in str(runtime_error):
+                    self.logger.error("CUDA out of memory - passage en mode CPU")
+                    
+                    # Fallback sur CPU
+                    old_device = self.device
+                    self.device = 'cpu'
+                    
+                    # Recharger le modèle sur CPU
+                    if self.model is not None:
+                        self.model.to('cpu')
+                    
+                    # Réessayer la détection
+                    try:
+                        results = self.model(
+                            frame_rgb,
+                            conf=conf,
+                            iou=iou,
+                            half=False,  # Pas de half precision sur CPU
+                            device='cpu',
+                            augment=False  # Désactiver multi-scale pour économiser la mémoire
+                        )
+                        return results
+                    except Exception as cpu_error:
+                        self.logger.error(f"Échec de la détection sur CPU: {str(cpu_error)}")
+                        return []
+                    finally:
+                        # Essayer de revenir au device original
+                        try:
+                            if old_device != 'cpu':
+                                self.device = old_device
+                                if self.model is not None:
+                                    self.model.to(self.device)
+                        except:
+                            pass
+                else:
+                    raise  # Relancer l'erreur si ce n'est pas CUDA OOM
             
         except Exception as e:
             self.logger.error(f"Erreur lors de la détection: {str(e)}")
@@ -265,8 +367,13 @@ class ObjectDetector:
         Args:
             threshold: Nouveau seuil (0.0 - 1.0)
         """
-        if 0.0 <= threshold <= 1.0:
-            self.conf_threshold = threshold
+        try:
+            if 0.0 <= threshold <= 1.0:
+                self.conf_threshold = threshold
+            else:
+                self.logger.warning(f"Seuil de confiance invalide: {threshold}, doit être entre 0.0 et 1.0")
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la définition du seuil de confiance: {str(e)}")
     
     def set_iou_threshold(self, threshold: float):
         """
@@ -275,8 +382,13 @@ class ObjectDetector:
         Args:
             threshold: Nouveau seuil (0.0 - 1.0)
         """
-        if 0.0 <= threshold <= 1.0:
-            self.iou_threshold = threshold
+        try:
+            if 0.0 <= threshold <= 1.0:
+                self.iou_threshold = threshold
+            else:
+                self.logger.warning(f"Seuil IoU invalide: {threshold}, doit être entre 0.0 et 1.0")
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la définition du seuil IoU: {str(e)}")
     
     def configure(self, **kwargs):
         """
@@ -285,29 +397,37 @@ class ObjectDetector:
         Args:
             **kwargs: Paramètres à configurer
         """
-        if 'conf_threshold' in kwargs:
-            self.set_conf_threshold(kwargs['conf_threshold'])
-        
-        if 'iou_threshold' in kwargs:
-            self.set_iou_threshold(kwargs['iou_threshold'])
-        
-        if 'model_path' in kwargs and kwargs['model_path'] != self.model_path:
-            self.model_path = kwargs['model_path']
-            self._load_model()
-        
-        if 'use_cuda' in kwargs:
-            if kwargs['use_cuda'] != self.use_cuda:
+        try:
+            needs_reload = False
+            
+            if 'conf_threshold' in kwargs:
+                self.set_conf_threshold(kwargs['conf_threshold'])
+            
+            if 'iou_threshold' in kwargs:
+                self.set_iou_threshold(kwargs['iou_threshold'])
+            
+            # Paramètres qui nécessitent un rechargement du modèle
+            if 'model_path' in kwargs and kwargs['model_path'] != self.model_path:
+                self.model_path = kwargs['model_path']
+                needs_reload = True
+            
+            if 'use_cuda' in kwargs and kwargs['use_cuda'] != self.use_cuda:
                 self.use_cuda = kwargs['use_cuda']
                 self.device = self._select_device()
-                self.model.to(self.device)
-        
-        if 'half_precision' in kwargs:
-            self.half_precision = kwargs['half_precision']
-            if self.device == 'cuda':
-                if self.half_precision:
-                    self.model.model.half()
-                else:
-                    self.model.model.float()
+                needs_reload = True
+            
+            if 'half_precision' in kwargs and kwargs['half_precision'] != self.half_precision:
+                self.half_precision = kwargs['half_precision']
+                needs_reload = True
+            
+            # Recharger le modèle si nécessaire
+            if needs_reload:
+                success = self._load_model()
+                if not success:
+                    self.logger.error("Échec du rechargement du modèle après configuration")
+                    
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la configuration du détecteur: {str(e)}")
     
     def get_class_name(self, class_id: int) -> str:
         """
@@ -320,9 +440,18 @@ class ObjectDetector:
             Nom de la classe en français
         """
         try:
+            if self.model is None or not hasattr(self.model, 'names'):
+                return f"classe_{class_id}"
+                
+            # Vérifier que l'ID de classe est valide
+            if class_id < 0 or class_id >= len(self.model.names):
+                return f"classe_{class_id}"
+                
             original_name = self.model.names[class_id]
             return self.class_mapping.get(original_name, original_name)
-        except:
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la récupération du nom de classe: {str(e)}")
             return f"classe_{class_id}"
     
     def preprocess_frame(self, frame: np.ndarray, target_size: Tuple[int, int] = None) -> np.ndarray:
@@ -336,24 +465,66 @@ class ObjectDetector:
         Returns:
             Frame prétraitée
         """
-        if frame is None:
+        if frame is None or frame.size == 0:
             return None
         
-        # Redimensionner si nécessaire
-        if target_size is not None:
-            frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_LINEAR)
-        
-        # Normalisation des couleurs (améliore la robustesse)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        return frame
+        try:
+            # Redimensionner si nécessaire
+            if target_size is not None:
+                if target_size[0] > 0 and target_size[1] > 0:
+                    try:
+                        frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_LINEAR)
+                    except Exception as resize_error:
+                        self.logger.error(f"Erreur lors du redimensionnement: {str(resize_error)}")
+                        # Continuer avec la frame originale
+            
+            # Conversion des couleurs optimisée
+            try:
+                # Convertir BGR -> RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            except Exception as color_error:
+                self.logger.error(f"Erreur lors de la conversion des couleurs: {str(color_error)}")
+                # Continuer avec la frame originale
+            
+            return frame
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors du prétraitement de la frame: {str(e)}")
+            return frame  # Retourner la frame originale en cas d'erreur
     
-    def enable_tracking(self, enabled: bool = True):
+    def enable_tracking(self, enabled: bool = True, method: str = 'bytetrack'):
         """
         Active ou désactive le tracking d'objets
         
         Args:
             enabled: True pour activer, False pour désactiver
+            method: Méthode de tracking ('bytetrack', 'deepsort', etc.)
         """
-        self.model.tracker = enabled
-        self.logger.info(f"Tracking {'activé' if enabled else 'désactivé'}")
+        try:
+            if self.model is not None:
+                # Les versions récentes de YOLO peuvent avoir une API différente pour le tracking
+                try:
+                    if enabled:
+                        self.model.tracker = method
+                        self.logger.info(f"Tracking activé avec la méthode {method}")
+                    else:
+                        self.model.tracker = None
+                        self.logger.info("Tracking désactivé")
+                except AttributeError:
+                    # Fallback pour d'autres versions de YOLO
+                    try:
+                        if enabled:
+                            if hasattr(self.model, 'track'):
+                                # Certaines versions utilisent model.track()
+                                self.model.tracking = True
+                                self.logger.info(f"Tracking activé avec la méthode par défaut")
+                            else:
+                                self.logger.warning("Cette version de YOLO ne semble pas supporter le tracking")
+                        else:
+                            if hasattr(self.model, 'track'):
+                                self.model.tracking = False
+                                self.logger.info("Tracking désactivé")
+                    except:
+                        self.logger.warning("Impossible de configurer le tracking")
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la configuration du tracking: {str(e)}")

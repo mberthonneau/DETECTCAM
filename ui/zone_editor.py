@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QMessageBox, QMenu, QSplitter, QFrame,
     QSizePolicy, QScrollArea, QComboBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QPoint, QSize
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QMouseEvent, QAction
 
 from utils.logger import get_module_logger
@@ -43,11 +43,34 @@ class ZoneEditor(QDialog):
         super().__init__(parent)
         self.logger = get_module_logger('UI.ZoneEditor')
         
-        # Copier les zones et sensibilités pour éviter de modifier les originaux
-        self.zones = deepcopy(zones) if zones else []
-        self.sensitivities = deepcopy(sensitivities) if sensitivities else {}
-        self.original_frame = frame.copy()
-        self.display_frame = frame.copy()
+        # Vérifier et copier le frame
+        if frame is None or frame.size == 0:
+            self.logger.warning("Frame vide fournie à l'éditeur de zones")
+            # Créer une frame de remplacement vide
+            height, width = 480, 640
+            self.original_frame = np.zeros((height, width, 3), dtype=np.uint8)
+            cv2.putText(
+                self.original_frame, "Pas d'image disponible", (50, height//2), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2
+            )
+        else:
+            self.original_frame = frame.copy()
+            
+        self.display_frame = self.original_frame.copy()
+        
+        # Copier et vérifier les zones
+        self.zones = []
+        if zones is not None:
+            for zone in zones:
+                if isinstance(zone, np.ndarray) and zone.size >= 6:  # Au moins 3 points (x,y)
+                    self.zones.append(zone.copy())
+        
+        # Copier et vérifier les sensibilités
+        self.sensitivities = {}
+        if sensitivities is not None:
+            for key, value in sensitivities.items():
+                if isinstance(value, (int, float)):
+                    self.sensitivities[key] = float(value)
         
         # État interne
         self.current_zone = []
@@ -254,11 +277,20 @@ class ZoneEditor(QDialog):
         main_layout.addLayout(control_area, 1)  # 1/3 de l'espace
         
         self.setLayout(main_layout)
+        
+        # Désactiver les contrôles de propriétés au démarrage
+        self.sensitivity_slider.setEnabled(False)
+        self.name_edit.setEnabled(False)
     
     def update_zones_list(self):
         """Met à jour la liste des zones"""
+        # Sauvegarder l'index sélectionné
+        selected_index = self.zones_list.currentRow()
+        
+        # Effacer la liste
         self.zones_list.clear()
         
+        # Ajouter les zones valides
         for i, zone in enumerate(self.zones):
             if zone is None or len(zone) < 3:
                 continue
@@ -268,6 +300,10 @@ class ZoneEditor(QDialog):
             
             # Ajouter à la liste
             self.zones_list.addItem(zone_name)
+        
+        # Restaurer la sélection si possible
+        if selected_index >= 0 and selected_index < self.zones_list.count():
+            self.zones_list.setCurrentRow(selected_index)
     
     def select_zone(self, index: int):
         """
@@ -325,50 +361,61 @@ class ZoneEditor(QDialog):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            # Supprimer la zone
-            del self.zones[self.selected_zone_index]
-            
-            # Mettre à jour les sensibilités et noms
-            new_sensitivities = {}
-            new_zone_names = {}
-            
-            for i in range(len(self.zones)):
-                old_i = i if i < self.selected_zone_index else i + 1
-                new_sensitivities[str(i)] = self.sensitivities.get(str(old_i), 50)
-                if old_i in self.zone_names:
-                    new_zone_names[i] = self.zone_names[old_i]
-            
-            self.sensitivities = new_sensitivities
-            self.zone_names = new_zone_names
-            
-            # Mettre à jour l'interface
-            self.selected_zone_index = -1
-            self.update_zones_list()
-            self.update_display()
+            try:
+                # Supprimer la zone
+                if 0 <= self.selected_zone_index < len(self.zones):
+                    del self.zones[self.selected_zone_index]
+                    
+                    # Mettre à jour les sensibilités et noms
+                    new_sensitivities = {}
+                    new_zone_names = {}
+                    
+                    for i in range(len(self.zones)):
+                        old_i = i if i < self.selected_zone_index else i + 1
+                        new_sensitivities[str(i)] = self.sensitivities.get(str(old_i), 50)
+                        if old_i in self.zone_names:
+                            new_zone_names[i] = self.zone_names[old_i]
+                    
+                    self.sensitivities = new_sensitivities
+                    self.zone_names = new_zone_names
+                    
+                    # Mettre à jour l'interface
+                    self.selected_zone_index = -1
+                    self.update_zones_list()
+                    self.update_display()
+                else:
+                    self.logger.error(f"Index de zone invalide: {self.selected_zone_index}")
+            except Exception as e:
+                self.logger.error(f"Erreur lors de la suppression de zone: {str(e)}")
+                QMessageBox.critical(self, "Erreur", f"Erreur lors de la suppression: {str(e)}")
     
     def rename_zone(self):
         """Renomme la zone sélectionnée"""
         if self.selected_zone_index < 0:
             return
         
-        # Obtenir le nom actuel
-        current_name = self.zone_names.get(self.selected_zone_index, f"Zone {self.selected_zone_index+1}")
-        
-        # Boîte de dialogue pour le nouveau nom
-        new_name, ok = QInputDialog.getText(
-            self, "Renommer la zone", "Nouveau nom:",
-            text=current_name
-        )
-        
-        if ok and new_name:
-            # Mettre à jour le nom
-            self.zone_names[self.selected_zone_index] = new_name
+        try:
+            # Obtenir le nom actuel
+            current_name = self.zone_names.get(self.selected_zone_index, f"Zone {self.selected_zone_index+1}")
             
-            # Mettre à jour l'interface
-            self.update_zones_list()
+            # Boîte de dialogue pour le nouveau nom
+            new_name, ok = QInputDialog.getText(
+                self, "Renommer la zone", "Nouveau nom:",
+                text=current_name
+            )
             
-            # Resélectionner la zone
-            self.zones_list.setCurrentRow(self.selected_zone_index)
+            if ok and new_name:
+                # Mettre à jour le nom
+                self.zone_names[self.selected_zone_index] = new_name
+                
+                # Mettre à jour l'interface
+                self.update_zones_list()
+                
+                # Resélectionner la zone
+                self.zones_list.setCurrentRow(self.selected_zone_index)
+        except Exception as e:
+            self.logger.error(f"Erreur lors du renommage de zone: {str(e)}")
+            QMessageBox.critical(self, "Erreur", f"Erreur lors du renommage: {str(e)}")
     
     def update_sensitivity(self, value: int):
         """
@@ -380,14 +427,17 @@ class ZoneEditor(QDialog):
         if self.selected_zone_index < 0:
             return
         
-        # Mettre à jour la sensibilité
-        self.sensitivities[str(self.selected_zone_index)] = value
-        
-        # Mettre à jour le label
-        self.sensitivity_label.setText(f"{value}%")
-        
-        # Mettre à jour l'affichage
-        self.update_display()
+        try:
+            # Mettre à jour la sensibilité
+            self.sensitivities[str(self.selected_zone_index)] = value
+            
+            # Mettre à jour le label
+            self.sensitivity_label.setText(f"{value}%")
+            
+            # Mettre à jour l'affichage
+            self.update_display()
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la mise à jour de la sensibilité: {str(e)}")
     
     def toggle_grid(self, state: int):
         """
@@ -396,8 +446,11 @@ class ZoneEditor(QDialog):
         Args:
             state: État de la case à cocher
         """
-        self.draw_grid = state == Qt.CheckState.Checked
-        self.update_display()
+        try:
+            self.draw_grid = state == Qt.CheckState.Checked
+            self.update_display()
+        except Exception as e:
+            self.logger.error(f"Erreur lors du basculement de la grille: {str(e)}")
     
     def mouse_press_event(self, event: QMouseEvent):
         """
@@ -409,46 +462,51 @@ class ZoneEditor(QDialog):
         if not self.is_drawing:
             return
         
-        # Obtenir les coordonnées dans l'image
-        label_pos = event.position()
-        image_x, image_y = self._label_to_image_coords(int(label_pos.x()), int(label_pos.y()))
-        
-        if image_x is None or image_y is None:
-            return
-        
-        # Si c'est un clic droit avec au moins 3 points, fermer la zone
-        if event.button() == Qt.MouseButton.RightButton and len(self.current_zone) >= 3:
-            # Vérifier si on est proche du premier point
-            first_point = self.current_zone[0]
-            distance = np.linalg.norm(np.array([image_x, image_y]) - np.array(first_point))
+        try:
+            # Obtenir les coordonnées dans l'image
+            label_pos = event.position()
+            image_x, image_y = self._label_to_image_coords(int(label_pos.x()), int(label_pos.y()))
             
-            if distance < 20:  # Tolérance de 20 pixels
-                # Créer un nouveau tableau numpy pour la zone
-                zone_array = np.array(self.current_zone)
-                
-                # Ajouter la zone
-                self.zones.append(zone_array)
-                new_index = len(self.zones) - 1
-                
-                # Définir la sensibilité par défaut
-                self.sensitivities[str(new_index)] = 50
-                
-                # Mettre à jour l'interface
-                self.update_zones_list()
-                self.zones_list.setCurrentRow(new_index)
-                self.selected_zone_index = new_index
-                
-                # Réinitialiser la zone courante
-                self.current_zone = []
-                self.is_drawing = False
-                
-                self.update_display()
+            if image_x is None or image_y is None:
                 return
-        
-        # Si c'est un clic gauche, ajouter un point
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.current_zone.append((image_x, image_y))
-            self.update_display()
+            
+            # Si c'est un clic droit avec au moins 3 points, fermer la zone
+            if event.button() == Qt.MouseButton.RightButton and len(self.current_zone) >= 3:
+                # Vérifier si on est proche du premier point
+                first_point = self.current_zone[0]
+                distance = np.linalg.norm(np.array([image_x, image_y]) - np.array(first_point))
+                
+                if distance < 20:  # Tolérance de 20 pixels
+                    # Créer un nouveau tableau numpy pour la zone
+                    zone_array = np.array(self.current_zone)
+                    
+                    # Vérifier que la zone est valide
+                    if len(zone_array) >= 3:
+                        # Ajouter la zone
+                        self.zones.append(zone_array)
+                        new_index = len(self.zones) - 1
+                        
+                        # Définir la sensibilité par défaut
+                        self.sensitivities[str(new_index)] = 50
+                        
+                        # Mettre à jour l'interface
+                        self.update_zones_list()
+                        self.zones_list.setCurrentRow(new_index)
+                        self.selected_zone_index = new_index
+                        
+                        # Réinitialiser la zone courante
+                        self.current_zone = []
+                        self.is_drawing = False
+                        
+                        self.update_display()
+                    return
+            
+            # Si c'est un clic gauche, ajouter un point
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.current_zone.append((image_x, image_y))
+                self.update_display()
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'événement de clic: {str(e)}")
     
     def mouse_move_event(self, event: QMouseEvent):
         """
@@ -460,16 +518,19 @@ class ZoneEditor(QDialog):
         if not self.is_drawing or len(self.current_zone) == 0:
             return
         
-        # Obtenir les coordonnées dans l'image
-        label_pos = event.position()
-        image_x, image_y = self._label_to_image_coords(int(label_pos.x()), int(label_pos.y()))
-        
-        if image_x is None or image_y is None:
-            return
-        
-        # Mettre à jour le point de prévisualisation
-        self.preview_point = (image_x, image_y)
-        self.update_display()
+        try:
+            # Obtenir les coordonnées dans l'image
+            label_pos = event.position()
+            image_x, image_y = self._label_to_image_coords(int(label_pos.x()), int(label_pos.y()))
+            
+            if image_x is None or image_y is None:
+                return
+            
+            # Mettre à jour le point de prévisualisation
+            self.preview_point = (image_x, image_y)
+            self.update_display()
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'événement de mouvement: {str(e)}")
     
     def mouse_release_event(self, event: QMouseEvent):
         """
@@ -492,143 +553,181 @@ class ZoneEditor(QDialog):
         Returns:
             Tuple (x, y) dans les coordonnées de l'image, ou (None, None) si hors limites
         """
-        if not self.image_label.pixmap() or self.image_label.pixmap().isNull():
-            return None, None
-        
-        # Obtenir les dimensions du QLabel et de l'image
-        label_width = self.image_label.width()
-        label_height = self.image_label.height()
-        
-        image_width = self.original_frame.shape[1]
-        image_height = self.original_frame.shape[0]
-        
-        # Récupérer les dimensions du pixmap affiché
-        pixmap = self.image_label.pixmap()
-        pixmap_width = pixmap.width()
-        pixmap_height = pixmap.height()
-        
-        # Calculer les ratios
-        ratio_x = image_width / pixmap_width
-        ratio_y = image_height / pixmap_height
-        
-        # Calculer l'offset pour centrer l'image
-        offset_x = (label_width - pixmap_width) / 2
-        offset_y = (label_height - pixmap_height) / 2
-        
-        # Coordonnées relatives au pixmap
-        pixmap_x = label_x - offset_x
-        pixmap_y = label_y - offset_y
-        
-        # Si les coordonnées sont hors du pixmap, retourner None
-        if pixmap_x < 0 or pixmap_x >= pixmap_width or pixmap_y < 0 or pixmap_y >= pixmap_height:
-            return None, None
-        
-        # Convertir en coordonnées d'image
-        image_x = int(pixmap_x * ratio_x)
-        image_y = int(pixmap_y * ratio_y)
-        
-        # Vérifier les limites dans l'image
-        if 0 <= image_x < image_width and 0 <= image_y < image_height:
-            return image_x, image_y
-        else:
+        try:
+            if not self.image_label.pixmap() or self.image_label.pixmap().isNull():
+                return None, None
+            
+            # Obtenir les dimensions du QLabel et de l'image
+            label_width = self.image_label.width()
+            label_height = self.image_label.height()
+            
+            if label_width <= 0 or label_height <= 0:
+                return None, None
+                
+            image_width = self.original_frame.shape[1]
+            image_height = self.original_frame.shape[0]
+            
+            # Récupérer les dimensions du pixmap affiché
+            pixmap = self.image_label.pixmap()
+            pixmap_width = pixmap.width()
+            pixmap_height = pixmap.height()
+            
+            # Vérifier les dimensions du pixmap
+            if pixmap_width <= 0 or pixmap_height <= 0:
+                return None, None
+            
+            # Calculer les ratios
+            ratio_x = image_width / pixmap_width
+            ratio_y = image_height / pixmap_height
+            
+            # Calculer l'offset pour centrer l'image
+            offset_x = (label_width - pixmap_width) / 2
+            offset_y = (label_height - pixmap_height) / 2
+            
+            # Coordonnées relatives au pixmap
+            pixmap_x = label_x - offset_x
+            pixmap_y = label_y - offset_y
+            
+            # Si les coordonnées sont hors du pixmap, retourner None
+            if pixmap_x < 0 or pixmap_x >= pixmap_width or pixmap_y < 0 or pixmap_y >= pixmap_height:
+                return None, None
+            
+            # Convertir en coordonnées d'image
+            image_x = int(pixmap_x * ratio_x)
+            image_y = int(pixmap_y * ratio_y)
+            
+            # Vérifier les limites dans l'image
+            if 0 <= image_x < image_width and 0 <= image_y < image_height:
+                return image_x, image_y
+            else:
+                return None, None
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la conversion des coordonnées: {str(e)}")
             return None, None
     
     def update_display(self):
         """Met à jour l'affichage de l'image avec les zones"""
-        if self.original_frame is None:
-            return
-        
-        # Copier l'image originale
-        display_frame = self.original_frame.copy()
-        
-        # Dessiner la grille si activée
-        if self.draw_grid:
-            self._draw_grid(display_frame)
-        
-        # Dessiner les zones existantes
-        for i, zone in enumerate(self.zones):
-            if not isinstance(zone, np.ndarray) or zone.size == 0:
-                continue
+        try:
+            if self.original_frame is None:
+                return
             
-            # Déterminer la couleur selon la sensibilité et si la zone est sélectionnée
-            is_selected = (i == self.selected_zone_index)
+            # Copier l'image originale
+            display_frame = self.original_frame.copy()
             
-            # Sensibilité de 0 à 100
-            sensitivity = int(self.sensitivities.get(str(i), 50))
+            # Dessiner la grille si activée
+            if self.draw_grid:
+                self._draw_grid(display_frame)
             
-            # Couleur de base: plus la sensibilité est élevée, plus la zone est verte
-            # Vert pour les zones normales, bleu pour la zone sélectionnée
-            if is_selected and self.highlight_check.isChecked():
-                # Bleu pour la zone sélectionnée
-                color = (255, 0, 0)  # BGR
-                thickness = 3
-            else:
-                # Vert avec intensité basée sur la sensibilité
-                green_intensity = int(100 + (sensitivity / 100) * 155)  # 100 à 255
-                color = (0, green_intensity, 0)  # BGR
-                thickness = 2
-            
-            # Dessiner le polygone
-            cv2.polylines(display_frame, [zone.reshape((-1, 1, 2))], True, color, thickness)
-            
-            # Dessiner les sommets
-            for point in zone:
-                cv2.circle(display_frame, (int(point[0]), int(point[1])), 4, color, -1)
-            
-            # Afficher le numéro et le nom de la zone
-            if len(zone) > 0:
-                center_x = int(np.mean(zone[:, 0]))
-                center_y = int(np.mean(zone[:, 1]))
+            # Dessiner les zones existantes
+            for i, zone in enumerate(self.zones):
+                if not isinstance(zone, np.ndarray) or zone.size == 0 or len(zone) < 3:
+                    continue
                 
-                # Obtenir le nom de la zone
-                zone_name = self.zone_names.get(i, f"Zone {i+1}")
+                # Déterminer la couleur selon la sensibilité et si la zone est sélectionnée
+                is_selected = (i == self.selected_zone_index)
                 
-                # Dessiner un fond pour le texte
-                text_size, _ = cv2.getTextSize(zone_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                cv2.rectangle(display_frame, 
-                            (center_x - 5, center_y - text_size[1] - 5), 
-                            (center_x + text_size[0] + 5, center_y + 5), 
-                            (0, 0, 0), -1)
+                # Sensibilité de 0 à 100
+                sensitivity = int(self.sensitivities.get(str(i), 50))
                 
-                # Dessiner le texte
-                cv2.putText(display_frame, zone_name, (center_x, center_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        # Dessiner la zone en cours
-        if self.is_drawing and len(self.current_zone) > 0:
-            # Dessiner les lignes entre les points
-            for i in range(len(self.current_zone) - 1):
-                pt1 = tuple(map(int, self.current_zone[i]))
-                pt2 = tuple(map(int, self.current_zone[i+1]))
-                cv2.line(display_frame, pt1, pt2, (255, 0, 0), 2)
-            
-            # Dessiner les points individuels
-            for i, point in enumerate(self.current_zone):
-                pt = tuple(map(int, point))
-                color = (0, 255, 0) if i == 0 else (255, 0, 0)  # Premier point en vert
-                cv2.circle(display_frame, pt, 5, color, -1)
-                cv2.putText(display_frame, str(i+1), (pt[0] + 5, pt[1] - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            
-            # Dessiner la ligne de prévisualisation
-            if self.preview_point and len(self.current_zone) > 0:
-                last_pt = tuple(map(int, self.current_zone[-1]))
-                preview_pt = tuple(map(int, self.preview_point))
-                cv2.line(display_frame, last_pt, preview_pt, (200, 200, 200), 1)
+                # Couleur de base: plus la sensibilité est élevée, plus la zone est verte
+                # Vert pour les zones normales, bleu pour la zone sélectionnée
+                if is_selected and self.highlight_check.isChecked():
+                    # Bleu pour la zone sélectionnée
+                    color = (255, 0, 0)  # BGR
+                    thickness = 3
+                else:
+                    # Vert avec intensité basée sur la sensibilité
+                    green_intensity = int(100 + (sensitivity / 100) * 155)  # 100 à 255
+                    color = (0, green_intensity, 0)  # BGR
+                    thickness = 2
                 
-                # Si plus de 2 points, montrer une ligne vers le premier point
-                if len(self.current_zone) > 2:
-                    first_pt = tuple(map(int, self.current_zone[0]))
-                    cv2.line(display_frame, preview_pt, first_pt, (200, 200, 200), 1, cv2.LINE_DASH)
+                # Vérifier que la zone a le bon format
+                try:
+                    # Dessiner le polygone
+                    zone_points = zone.reshape((-1, 1, 2)).astype(np.int32)
+                    cv2.polylines(display_frame, [zone_points], True, color, thickness)
+                    
+                    # Dessiner les sommets
+                    for point in zone:
+                        cv2.circle(display_frame, (int(point[0]), int(point[1])), 4, color, -1)
+                    
+                    # Afficher le numéro et le nom de la zone
+                    if len(zone) > 0:
+                        center_x = int(np.mean(zone[:, 0]))
+                        center_y = int(np.mean(zone[:, 1]))
+                        
+                        # Obtenir le nom de la zone
+                        zone_name = self.zone_names.get(i, f"Zone {i+1}")
+                        
+                        # Vérifier que le centre est dans l'image
+                        h, w = display_frame.shape[:2]
+                        if 0 <= center_x < w and 0 <= center_y < h:
+                            # Dessiner un fond pour le texte
+                            text_size, _ = cv2.getTextSize(zone_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                            cv2.rectangle(display_frame, 
+                                        (center_x - 5, center_y - text_size[1] - 5), 
+                                        (center_x + text_size[0] + 5, center_y + 5), 
+                                        (0, 0, 0), -1)
+                            
+                            # Dessiner le texte
+                            cv2.putText(display_frame, zone_name, (center_x, center_y),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                except Exception as zone_error:
+                    self.logger.error(f"Erreur lors du dessin de la zone {i}: {str(zone_error)}")
+                    continue
             
-            # Instructions pour fermer la zone
-            if len(self.current_zone) >= 3:
-                text = "Cliquez sur le premier point avec le bouton droit pour fermer la zone"
-                cv2.putText(display_frame, text, (10, display_frame.shape[0] - 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        
-        # Afficher l'image
-        self._display_frame(display_frame)
+            # Dessiner la zone en cours
+            if self.is_drawing and len(self.current_zone) > 0:
+                try:
+                    # Dessiner les lignes entre les points
+                    for i in range(len(self.current_zone) - 1):
+                        pt1 = tuple(map(int, self.current_zone[i]))
+                        pt2 = tuple(map(int, self.current_zone[i+1]))
+                        cv2.line(display_frame, pt1, pt2, (255, 0, 0), 2)
+                    
+                    # Dessiner les points individuels
+                    for i, point in enumerate(self.current_zone):
+                        pt = tuple(map(int, point))
+                        color = (0, 255, 0) if i == 0 else (255, 0, 0)  # Premier point en vert
+                        cv2.circle(display_frame, pt, 5, color, -1)
+                        cv2.putText(display_frame, str(i+1), (pt[0] + 5, pt[1] - 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    
+                    # Dessiner la ligne de prévisualisation
+                    if self.preview_point and len(self.current_zone) > 0:
+                        last_pt = tuple(map(int, self.current_zone[-1]))
+                        preview_pt = tuple(map(int, self.preview_point))
+                        cv2.line(display_frame, last_pt, preview_pt, (200, 200, 200), 1)
+                        
+                        # Si plus de 2 points, montrer une ligne vers le premier point
+                        if len(self.current_zone) > 2:
+                            first_pt = tuple(map(int, self.current_zone[0]))
+                            cv2.line(display_frame, preview_pt, first_pt, (200, 200, 200), 1, cv2.LINE_AA)
+                    
+                    # Instructions pour fermer la zone
+                    if len(self.current_zone) >= 3:
+                        h, w = display_frame.shape[:2]
+                        text = "Cliquez sur le premier point avec le bouton droit pour fermer la zone"
+                        text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        
+                        # Dessiner un fond pour le texte
+                        cv2.rectangle(display_frame, 
+                                    (10, h - 30 - text_size[1]), 
+                                    (10 + text_size[0], h - 30 + text_size[1]), 
+                                    (0, 0, 0), -1)
+                        
+                        cv2.putText(display_frame, text, (10, h - 30),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                except Exception as current_error:
+                    self.logger.error(f"Erreur lors du dessin de la zone en cours: {str(current_error)}")
+            
+            # Sauvegarder la frame modifiée
+            self.display_frame = display_frame.copy()
+            
+            # Afficher l'image
+            self._display_frame(display_frame)
+        except Exception as e:
+            self.logger.error(f"Erreur lors de la mise à jour de l'affichage: {str(e)}")
     
     def _draw_grid(self, frame: np.ndarray):
         """
@@ -637,22 +736,28 @@ class ZoneEditor(QDialog):
         Args:
             frame: Image sur laquelle dessiner
         """
-        height, width = frame.shape[:2]
-        
-        # Espacement de la grille
-        grid_spacing = 50
-        
-        # Couleur et épaisseur
-        color = (200, 200, 200)  # Gris clair
-        thickness = 1
-        
-        # Dessiner les lignes verticales
-        for x in range(0, width, grid_spacing):
-            cv2.line(frame, (x, 0), (x, height), color, thickness)
-        
-        # Dessiner les lignes horizontales
-        for y in range(0, height, grid_spacing):
-            cv2.line(frame, (0, y), (width, y), color, thickness)
+        try:
+            if frame is None or frame.size == 0:
+                return
+                
+            height, width = frame.shape[:2]
+            
+            # Espacement de la grille
+            grid_spacing = 50
+            
+            # Couleur et épaisseur
+            color = (200, 200, 200)  # Gris clair
+            thickness = 1
+            
+            # Dessiner les lignes verticales
+            for x in range(0, width, grid_spacing):
+                cv2.line(frame, (x, 0), (x, height), color, thickness)
+            
+            # Dessiner les lignes horizontales
+            for y in range(0, height, grid_spacing):
+                cv2.line(frame, (0, y), (width, y), color, thickness)
+        except Exception as e:
+            self.logger.error(f"Erreur lors du dessin de la grille: {str(e)}")
     
     def _display_frame(self, frame: np.ndarray):
         """
@@ -661,19 +766,22 @@ class ZoneEditor(QDialog):
         Args:
             frame: Frame à afficher
         """
-        if frame is None:
-            return
-        
-        # Convertir en RGB pour Qt
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_frame.shape
-        
-        # Convertir en QImage
-        bytes_per_line = ch * w
-        qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        
-        # Mettre à jour le QLabel
-        self.image_label.setPixmap(QPixmap.fromImage(qt_image))
+        try:
+            if frame is None or frame.size == 0:
+                return
+            
+            # Convertir en RGB pour Qt
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_frame.shape
+            
+            # Convertir en QImage
+            bytes_per_line = ch * w
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            
+            # Mettre à jour le QLabel
+            self.image_label.setPixmap(QPixmap.fromImage(qt_image))
+        except Exception as e:
+            self.logger.error(f"Erreur lors de l'affichage de la frame: {str(e)}")
     
     def get_zones(self) -> List[np.ndarray]:
         """
@@ -682,7 +790,12 @@ class ZoneEditor(QDialog):
         Returns:
             Liste des zones
         """
-        return self.zones
+        # Ne retourner que les zones valides
+        valid_zones = []
+        for zone in self.zones:
+            if isinstance(zone, np.ndarray) and zone.size >= 6:  # Au moins 3 points (x,y)
+                valid_zones.append(zone)
+        return valid_zones
     
     def get_sensitivities(self) -> Dict[str, float]:
         """

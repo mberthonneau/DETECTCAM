@@ -926,16 +926,16 @@ class SettingsDialog(QDialog):
         
         # Modèle
         model_path = detection_config.get('model', 'yolo11m.pt')
-        if model_path == 'yolo11n.pt' or model_path == 'yolov8n.pt':
-            self.model_combo.setCurrentText("YOLOv8n (petit, rapide)")
-        elif model_path == 'yolo11s.pt' or model_path == 'yolov8s.pt':
-            self.model_combo.setCurrentText("YOLOv8s (petit-moyen)")
-        elif model_path == 'yolo11m.pt' or model_path == 'yolov8m.pt':
-            self.model_combo.setCurrentText("YOLOv8m (moyen, équilibré)")
-        elif model_path == 'yolo11l.pt' or model_path == 'yolov8l.pt':
-            self.model_combo.setCurrentText("YOLOv8l (large)")
-        elif model_path == 'yolo11x.pt' or model_path == 'yolov8x.pt':
-            self.model_combo.setCurrentText("YOLOv8x (extra large, précis)")
+        if model_path == 'yolo11n.pt' or model_path == 'yolo11n.pt':
+            self.model_combo.setCurrentText("YOLOv11n (petit, rapide)")
+        elif model_path == 'yolo11s.pt' or model_path == 'yolo11s.pt':
+            self.model_combo.setCurrentText("YOLOv11s (petit-moyen)")
+        elif model_path == 'yolo11m.pt' or model_path == 'yolo11m.pt':
+            self.model_combo.setCurrentText("YOLOv11m (moyen, équilibré)")
+        elif model_path == 'yolo11l.pt' or model_path == 'yolo11l.pt':
+            self.model_combo.setCurrentText("YOLOv11l (large)")
+        elif model_path == 'yolo11x.pt' or model_path == 'yolo11x.pt':
+            self.model_combo.setCurrentText("YOLOv11x (extra large, précis)")
         else:
             self.model_combo.setCurrentText("Modèle personnalisé...")
             self.custom_model_path.setText(model_path)
@@ -1308,16 +1308,16 @@ class SettingsDialog(QDialog):
         
         # Modèle
         model = self.model_combo.currentText()
-        if model == "YOLOv8n (petit, rapide)":
-            updated_config['detection']['model'] = 'yolov8n.pt'
-        elif model == "YOLOv8s (petit-moyen)":
-            updated_config['detection']['model'] = 'yolov8s.pt'
-        elif model == "YOLOv8m (moyen, équilibré)":
-            updated_config['detection']['model'] = 'yolov8m.pt'
-        elif model == "YOLOv8l (large)":
-            updated_config['detection']['model'] = 'yolov8l.pt'
-        elif model == "YOLOv8x (extra large, précis)":
-            updated_config['detection']['model'] = 'yolov8x.pt'
+        if model == "YOLO11n (petit, rapide)":
+            updated_config['detection']['model'] = 'yolo11n.pt'
+        elif model == "YOLO11s (petit-moyen)":
+            updated_config['detection']['model'] = 'yolo11s.pt'
+        elif model == "YOLO11m (moyen, équilibré)":
+            updated_config['detection']['model'] = 'yolo11m.pt'
+        elif model == "YOLO11l (large)":
+            updated_config['detection']['model'] = 'yolo11l.pt'
+        elif model == "YOLO11x (extra large, précis)":
+            updated_config['detection']['model'] = 'yolo11x.pt'
         elif model == "Modèle personnalisé...":
             updated_config['detection']['model'] = self.custom_model_path.text()
         

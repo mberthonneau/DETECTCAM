@@ -8,11 +8,11 @@
         "start_minimized": false
     },
     "display": {
-        "resize_mode": "original",
+        "resize_mode": "fit",
         "custom_width": 640,
         "custom_height": 480,
         "resize_percent": 100,
-        "auto_resize_label": false,
+        "auto_resize_label": true,
         "show_confidence": true,
         "show_class": true,
         "show_fps": true,
